@@ -9,6 +9,7 @@
 #![feature(allocator_api)]
 #![feature(allow_internal_unstable)]
 #![feature(slice_ptr_get)]
+#![feature(strict_provenance)]
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "boost")] {

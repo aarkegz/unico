@@ -8,6 +8,7 @@
 #![feature(allocator_api)]
 #![feature(allow_internal_unstable)]
 #![feature(slice_ptr_get)]
+#![feature(strict_provenance)]
 //! This module tackles with stacks.
 //!
 //! We have [a stack structure](Stack) that keep track of its own memory, and
