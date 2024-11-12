@@ -22,6 +22,7 @@ unico-stack = {path = "stack", default-features = false}
 futures-lite = "2.4"
 spin_on = "0.1"
 time = "0.3"
+tokio = { version = "1.41", features = ["full"] }
 
 [workspace]
 members = [
