@@ -87,7 +87,7 @@ fn main() {
             };
             let output_fn =
                 |buf: &[u8]| output_file.write_all(buf).wait().map_err(|_| ());
-            demo_middleware(input_fn, output_fn).unwrap()
+            sync(|| demo_middleware(input_fn, output_fn).unwrap()).await
         };
 
         let result = tokio::runtime::Builder::new_current_thread()
