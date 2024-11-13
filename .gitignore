@@ -1,2 +1,5 @@
 /target
+/demo/target
 .vscode
+.idea
+*.img

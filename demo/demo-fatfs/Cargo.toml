@@ -1,0 +1,9 @@
+[package]
+name = "demo-fatfs"
+edition = "2021"
+
+[dependencies]
+unico.workspace = true
+fatfs = "0.3"
+tokio.workspace = true
+chrono.workspace = true

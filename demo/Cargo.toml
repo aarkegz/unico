@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "demo-fatfs"
+]
+
+[workspace.dependencies]
+unico = { path = "..", features = ["default"] }
+tokio = { version = "1.41", features = ["full"] }
+chrono = "0.4"
