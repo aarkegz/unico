@@ -124,24 +124,22 @@ fn sync_main<B: Backend>() {
 }
 
 fn async_main<B: Backend>() {
-    let mut j = FuturesUnordered::new();
-
-    for i in 0..JOBS {
-        j.push(async move {
-            sync(|| {
-                do_job::<B>(format!("{}.img", i), FS_SIZE, FILE_SIZE, i as u64)
-            }).await.unwrap();
-        });
-    }
-
-    tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(async {
-            while j.next().await.is_some() {}
+        .unwrap();
+
+    runtime.block_on(async move {
+        let tasks: Vec<_> = (0..JOBS).map(|i| {
+            tokio::spawn(async move {
+                sync(|| do_job::<B>(format!("{}.img", i), FS_SIZE, FILE_SIZE, i as u64).unwrap()).await;
+            })
+        }).collect();
+
+        for task in tasks {
+            task.await.unwrap();
         }
-        );
+    });
 }
 
 fn main() {
