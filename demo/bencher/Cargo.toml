@@ -1,0 +1,11 @@
+[package]
+edition = "2021"
+name = "bencher"
+
+[dependencies]
+time.workspace = true
+
+[dev-dependencies]
+unico.workspace = true
+futures-lite.workspace = true
+spin_on.workspace = true

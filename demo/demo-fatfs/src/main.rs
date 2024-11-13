@@ -1,61 +1,161 @@
 #![feature(allocator_api)]
+#![feature(future_join)]
 
 mod backend;
 
 use std::{
-    alloc::Global, fs, io::{Seek, SeekFrom, Write}
+    alloc::Global, io::{Read, Write}, path::Path
 };
 
 use backend::{Backend, SyncBackend, UnicoBackend};
 use fatfs::{FatType, FsOptions};
-use unico::{asym::sync, context::{boost::Boost, global_resumer}, stack::global_stack_allocator};
+use futures::{stream::FuturesUnordered, StreamExt};
+use rand::{RngCore, SeedableRng};
+use sha2::Digest;
+use unico::{
+    asym::sync,
+    context::{boost::Boost, global_resumer},
+    stack::global_stack_allocator,
+};
 
-fn sync_main<B: Backend>() {
-    const FILENAME: &'static str = "fat.img";
-    const SIZE: u64 = 40 * 1024 * 1024; // 40 MB
+// A demo job:
+// 1. Create a file system image with a backend.
+// 2. Write a file 'metadata.txt' with the following content: The file system
+//    image is created at <current time>, with a size of <fs_size> bytes. The
+//    random data, with a size of <file_size> bytes, is generated with seed
+//    <seed>, and written to 'random.bin'.
+// 3. Write a file 'random.bin' with random data.
+// 4. Write a file 'zero.bin' with no data.
+// 5. Read the file 'random.bin' and check if the data is correct.
+fn do_job<B: Backend>(
+    output: impl AsRef<Path> + Send,
+    fs_size: u64,
+    file_size: u64,
+    seed: u64,
+) -> std::io::Result<()> {
+    const SECTOR_SIZE: u64 = 512;
+    const BLOCK_SIZE: u64 = 1048576;
 
-    let backend = B::open_or_create(FILENAME, SIZE, |backend| {
+    println!("#{}: Enter do_job", seed);
+
+    // 1. Create a file system image with a backend.
+    let fs_size = fs_size.next_multiple_of(SECTOR_SIZE);
+
+    let backend = B::create(output, fs_size, |backend| {
         let options = fatfs::FormatVolumeOptions::new()
             .fat_type(FatType::Fat32)
-            .total_sectors((SIZE / 512) as u32);
+            .total_sectors((fs_size / SECTOR_SIZE) as u32);
         fatfs::format_volume(backend, options)
-    })
-    .unwrap();
+    })?;
 
-    let fs = fatfs::FileSystem::new(backend, FsOptions::new()).unwrap();
+    let fs = fatfs::FileSystem::new(backend, FsOptions::new())?;
     let root_dir = fs.root_dir();
-    let mut file = root_dir.create_file("1.txt").unwrap();
 
-    file.seek(SeekFrom::End(0)).unwrap();
+    println!("#{}: File system image created", seed);
 
-    let size = root_dir.iter().find(|e| {
-        e.as_ref().is_ok_and(|e| e.file_name() == "1.txt")
-    }).unwrap().unwrap().len();
-    let now_string = chrono::Local::now().to_string();
+    // 2. Write a file 'metadata.txt' with the following content:
+    let mut desc_file = root_dir.create_file("metadata.txt").unwrap();
+    desc_file.write_all(
+        format!(
+            "The file system image is created at {}, with a size of {} bytes.\n",
+            chrono::Local::now(),
+            fs_size
+        )
+        .as_bytes(),
+    )?;
+    desc_file.write_all(
+        format!(
+            "The random data, with a size of {} bytes, is generated with seed {}, and written to 'random.bin'.\n",
+            file_size, seed
+        )
+        .as_bytes(),
+    )?;
+    drop(desc_file);
 
-    file.write_all(format!("Hello, world! {}: 1.txt is {} bytes long.\n", now_string, size).as_bytes()).unwrap();
+    println!("#{}: metadata.txt written", seed);
 
-    drop(file);
-    drop(root_dir);
-    fs.unmount().unwrap()
+    // 3. Write a file 'random.bin' with random data.
+    let file_size = file_size.next_multiple_of(BLOCK_SIZE);
+    let mut random_file = root_dir.create_file("random.bin").unwrap();
+    // pcg64 is fast and good enough for this job, it takes around 11% of the total time when the file size is 90MB
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(seed); 
+    let mut buf = vec![0u8; BLOCK_SIZE as usize];
+    let mut checksum = sha2::Sha224::new();
+    for _ in 0..file_size / BLOCK_SIZE {
+        rng.fill_bytes(&mut buf);
+        random_file.write_all(&buf)?;
+        checksum.update(&buf);
+    }
+    drop(random_file);
+    let expected_checksum = checksum.finalize();
+
+    println!("#{}: random.bin written", seed);
+
+    // 4. Write a file 'zero.bin' with no data.
+    let zero_file = root_dir.create_file("zero.bin").unwrap();
+    drop(zero_file);
+
+    println!("#{}: zero.bin written", seed);
+
+    // 5. Read the file 'random.bin' and check if the data is correct.
+    let mut checksum = sha2::Sha224::new();
+    let mut random_file = root_dir.open_file("random.bin").unwrap();
+    for _ in 0..file_size / BLOCK_SIZE {
+        random_file.read_exact(&mut buf)?;
+        checksum.update(&buf);
+    }
+    let actual_checksum = checksum.finalize();
+    assert_eq!(expected_checksum, actual_checksum);
+    drop(random_file);
+
+    println!("#{}: random.bin read", seed);
+
+    Ok(())
+}
+
+const JOBS: usize = 16;
+const FS_SIZE: u64 = 100 * 1024 * 1024;
+const FILE_SIZE: u64 = 90 * 1024 * 1024;
+
+fn sync_main<B: Backend>() {
+    for i in 0..JOBS {
+        do_job::<B>(format!("{}.img", i), FS_SIZE, FILE_SIZE, i as u64).unwrap();
+    }
+}
+
+fn async_main<B: Backend>() {
+    let mut j = FuturesUnordered::new();
+
+    for i in 0..JOBS {
+        j.push(async move {
+            sync(|| {
+                do_job::<B>(format!("{}.img", i), FS_SIZE, FILE_SIZE, i as u64)
+            }).await.unwrap();
+        });
+    }
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            while j.next().await.is_some() {}
+        }
+        );
 }
 
 fn main() {
-    #[cfg(feature = "sync")]
     {
+        let now = std::time::Instant::now();
         sync_main::<SyncBackend>();
+        println!("sync_main::<SyncBackend> took {:?}", now.elapsed());
     }
     {
-
         global_resumer!(Boost);
         global_stack_allocator!(Global);
 
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                sync(|| sync_main::<UnicoBackend>()).await
-            });
+        let now = std::time::Instant::now();
+        async_main::<UnicoBackend>();
+        println!("sync_main::<UnicoBackend> took {:?}", now.elapsed());
     }
 }

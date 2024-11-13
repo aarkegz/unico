@@ -1,6 +1,5 @@
 use std::{
-    fmt::Arguments,
-    io::{self, IoSlice, IoSliceMut, SeekFrom},
+    io::{self, IoSlice, SeekFrom},
     path::Path,
 };
 
@@ -10,13 +9,21 @@ use tokio::{
 };
 use unico::asym::AsymWait;
 
+#[allow(dead_code)]
 /// The backend which takes care of the actual file operations for the FAT
 /// filesystem images.
 pub trait Backend: Sized + io::Read + io::Write + io::Seek {
     /// Open an existing image file. The file must already exist.
     fn open<P: AsRef<Path> + Send>(path: P) -> io::Result<Self>;
     /// Create a new image file with the given size, then initialize it with the
-    /// given closure.
+    /// given closure. Truncate the file if it already exists.
+    fn create<P: AsRef<Path> + Send, F: FnOnce(&mut Self) -> io::Result<()>>(
+        path: P,
+        size: u64,
+        init: F,
+    ) -> io::Result<Self>;
+    /// Create a new image file with the given size, then initialize it with the
+    /// given closure. Returns error if the file already exists.
     fn create_new<P: AsRef<Path> + Send, F: FnOnce(&mut Self) -> io::Result<()>>(
         path: P,
         size: u64,
@@ -50,6 +57,22 @@ impl Backend for UnicoBackend {
             .open(path)
             .wait()
             .map(|file| Self { file })
+    }
+
+    fn create<P: AsRef<Path> + Send, F: FnOnce(&mut Self) -> io::Result<()>>(
+        path: P,
+        size: u64,
+        init: F,
+    ) -> io::Result<Self> {
+        File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .wait()
+            .and_then(|file| file.set_len(size).wait().map(|_| Self { file }))
+            .and_then(|mut backend| init(&mut backend).map(|_| backend))
     }
 
     fn create_new<P: AsRef<Path> + Send, F: FnOnce(&mut Self) -> io::Result<()>>(
@@ -124,6 +147,21 @@ impl Backend for SyncBackend {
             .write(true)
             .create(false)
             .open(path)
+    }
+
+    fn create<P: AsRef<Path> + Send, F: FnOnce(&mut Self) -> io::Result<()>>(
+        path: P,
+        size: u64,
+        init: F,
+    ) -> io::Result<Self> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .and_then(|file| file.set_len(size).map(|_| file))
+            .and_then(|mut file| init(&mut file).map(|_| file))
     }
 
     fn create_new<P: AsRef<Path> + Send, F: FnOnce(&mut Self) -> io::Result<()>>(

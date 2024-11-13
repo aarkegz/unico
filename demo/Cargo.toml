@@ -1,10 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "demo-fatfs"
+    "demo-fatfs",
+    "bencher",
 ]
 
 [workspace.dependencies]
-unico = { path = "..", features = ["default"] }
+unico = { path = "..", features = ["default","unwind"] }
 tokio = { version = "1.41", features = ["full"] }
 chrono = "0.4"
+futures-lite = "2.4"
+spin_on = "0.1"
+time = "0.3"
