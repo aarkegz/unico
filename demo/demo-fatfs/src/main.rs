@@ -1,13 +1,16 @@
 #![feature(allocator_api)]
 #![feature(future_join)]
+#![feature(new_uninit)]
 
 mod backend;
 
 use std::{
-    alloc::Global, io::{Read, Write}, path::Path
+    alloc::Global,
+    io::{Read, Write},
+    path::Path,
 };
 
-use backend::{Backend, SyncBackend, UnicoBackend};
+use backend::{Backend, CachedBackend, RWCount, SyncBackend, UnicoBackend};
 use fatfs::{FatType, FsOptions};
 use futures::{stream::FuturesUnordered, StreamExt};
 use rand::{RngCore, SeedableRng};
@@ -77,8 +80,9 @@ fn do_job<B: Backend>(
     // 3. Write a file 'random.bin' with random data.
     let file_size = file_size.next_multiple_of(BLOCK_SIZE);
     let mut random_file = root_dir.create_file("random.bin").unwrap();
-    // pcg64 is fast and good enough for this job, it takes around 11% of the total time when the file size is 90MB
-    let mut rng = rand_pcg::Pcg64::seed_from_u64(seed); 
+    // pcg64 is fast and good enough for this job, it takes around 11% of the total
+    // time when the file size is 90MB
+    let mut rng = rand_pcg::Pcg64::seed_from_u64(seed);
     let mut buf = vec![0u8; BLOCK_SIZE as usize];
     let mut checksum = sha2::Sha224::new();
     for _ in 0..file_size / BLOCK_SIZE {
@@ -117,9 +121,17 @@ const JOBS: usize = 16;
 const FS_SIZE: u64 = 100 * 1024 * 1024;
 const FILE_SIZE: u64 = 90 * 1024 * 1024;
 
+const fn fs_size(id: usize) -> u64 {
+    ((50 + id * 5) * 1024 * 1024) as u64
+}
+
+const fn file_size(id: usize) -> u64 {
+    ((40 + id * 5) * 1024 * 1024) as u64
+}
+
 fn sync_main<B: Backend>() {
     for i in 0..JOBS {
-        do_job::<B>(format!("{}.img", i), FS_SIZE, FILE_SIZE, i as u64).unwrap();
+        do_job::<B>(format!("{}.img", i), fs_size(i), file_size(i), i as u64).unwrap();
     }
 }
 
@@ -130,11 +142,17 @@ fn async_main<B: Backend>() {
         .unwrap();
 
     runtime.block_on(async move {
-        let tasks: Vec<_> = (0..JOBS).map(|i| {
-            tokio::spawn(async move {
-                sync(|| do_job::<B>(format!("{}.img", i), FS_SIZE, FILE_SIZE, i as u64).unwrap()).await;
+        let tasks: Vec<_> = (0..JOBS)
+            .map(|i| {
+                tokio::spawn(async move {
+                    sync(|| {
+                        do_job::<B>(format!("{}.img", i), fs_size(i), file_size(i), i as u64)
+                            .unwrap()
+                    })
+                    .await;
+                })
             })
-        }).collect();
+            .collect();
 
         for task in tasks {
             task.await.unwrap();
@@ -145,7 +163,7 @@ fn async_main<B: Backend>() {
 fn main() {
     {
         let now = std::time::Instant::now();
-        sync_main::<SyncBackend>();
+        sync_main::<CachedBackend<RWCount<SyncBackend>>>();
         println!("sync_main::<SyncBackend> took {:?}", now.elapsed());
     }
     {
@@ -153,7 +171,7 @@ fn main() {
         global_stack_allocator!(Global);
 
         let now = std::time::Instant::now();
-        async_main::<UnicoBackend>();
+        async_main::<CachedBackend<RWCount<UnicoBackend>>>();
         println!("sync_main::<UnicoBackend> took {:?}", now.elapsed());
     }
 }

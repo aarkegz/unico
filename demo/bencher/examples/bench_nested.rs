@@ -5,7 +5,11 @@ use std::{alloc::Global, hint::black_box, io::Read};
 use bencher::bench_matrix;
 use futures_lite::{AsyncRead, AsyncReadExt};
 use spin_on::spin_on;
-use unico::{asym::{sync, AsymWait}, context::{boost::Boost, global_resumer}, stack::global_stack_allocator};
+use unico::{
+    asym::{sync, AsymWait},
+    context::{boost::Boost, global_resumer},
+    stack::global_stack_allocator,
+};
 
 global_resumer!(Boost);
 global_stack_allocator!(Global);
@@ -35,7 +39,7 @@ async fn read_direct(
 fn main() {
     const SIZE: usize = 600;
 
-    bench_matrix!("nested": 1048576, times => {   
+    bench_matrix!("nested": 1048576, times => {
         spin_on(black_box(async {
             for _ in 0..times {
                 let r: &[u8] = &[0x12; SIZE];
