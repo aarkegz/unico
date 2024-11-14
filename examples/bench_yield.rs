@@ -1,6 +1,11 @@
 #![feature(allocator_api)]
 
-use std::{alloc::{Allocator, Global}, hint::black_box, iter, time::Instant};
+use std::{
+    alloc::{Allocator, Global},
+    hint::black_box,
+    iter,
+    time::Instant,
+};
 
 use futures_lite::future::yield_now;
 use spin_on::spin_on;

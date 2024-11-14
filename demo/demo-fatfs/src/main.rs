@@ -146,8 +146,13 @@ fn async_main<B: Backend>() {
             .map(|i| {
                 tokio::spawn(async move {
                     sync(|| {
-                        do_job::<B>(format!("{}.img", i), fs_size(i), file_size(i), i as u64)
-                            .unwrap()
+                        do_job::<B>(
+                            format!("{}.img", i),
+                            fs_size(i),
+                            file_size(i),
+                            i as u64,
+                        )
+                        .unwrap()
                     })
                     .await;
                 })

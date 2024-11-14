@@ -57,7 +57,8 @@ fn main() {
     // 1. full sync
     {
         let mut input_file = std::fs::File::open(input_file).unwrap();
-        let mut output_file = std::fs::File::create("./target/LICENSE-APACHE-demo-sync").unwrap();
+        let mut output_file =
+            std::fs::File::create("./target/LICENSE-APACHE-demo-sync").unwrap();
         let input_fn = |buf: &mut [u8]| input_file.read(buf).map_err(|_| ());
         let output_fn = |buf: &[u8]| output_file.write_all(buf).map_err(|_| ());
         let result = demo_middleware(input_fn, output_fn).unwrap();
@@ -76,9 +77,10 @@ fn main() {
         let f = async {
             // async file
             let mut input_file = tokio::fs::File::open(input_file).await.unwrap();
-            let mut output_file = tokio::fs::File::create("./target/LICENSE-APACHE-demo-unico")
-                .await
-                .unwrap();
+            let mut output_file =
+                tokio::fs::File::create("./target/LICENSE-APACHE-demo-unico")
+                    .await
+                    .unwrap();
             // async read and write wrapped by unico
             let input_fn = |buf: &mut [u8]| {
                 AsyncReadExt::read(&mut input_file, buf)

@@ -1,7 +1,5 @@
 use std::{
-    collections::BTreeMap,
-    io::{self, SeekFrom},
-    path::Path,
+    collections::BTreeMap, io::{self, SeekFrom}, ops::Add, path::Path
 };
 
 use super::Backend;
@@ -9,8 +7,14 @@ use super::Backend;
 const PAGE_SIZE: usize = 1048576;
 
 pub enum PageType {
-    FullPage { number: u64 },
-    PartialPage { number: u64, offset: usize, size: usize },
+    FullPage {
+        number: u64,
+    },
+    PartialPage {
+        number: u64,
+        offset: usize,
+        size: usize,
+    },
 }
 
 pub struct PageRange {
@@ -77,7 +81,9 @@ pub struct CachePage {
 impl CachePage {
     pub fn new() -> Self {
         unsafe {
-            Self { data: Box::new_zeroed().assume_init() }
+            Self {
+                data: Box::new_zeroed().assume_init(),
+            }
         }
     }
 }
@@ -102,14 +108,25 @@ pub struct CachedBackend<B: Backend> {
     backend: B,
     cache: BTreeMap<u64, CachePage>,
     dirty: BTreeMap<u64, bool>,
+    my_pos: u64, // seeking may also be very expensive
+    my_len: u64, // we assume that the length of the file is fixed
 }
 
 impl<B: Backend> CachedBackend<B> {
-    pub fn new(backend: B) -> Self {
+    pub fn new(mut backend: B) -> Self {
+        let my_len = backend.seek(SeekFrom::End(0)).unwrap();
+        backend.seek(SeekFrom::Start(0)).unwrap();
+        
+        Self::new_with_len_known(backend, my_len)
+    }
+
+    pub fn new_with_len_known(backend: B, len: u64) -> Self {
         Self {
             backend,
             cache: BTreeMap::new(),
             dirty: BTreeMap::new(),
+            my_pos: 0,
+            my_len: len,
         }
     }
 }
@@ -129,7 +146,7 @@ impl<B: Backend> Backend for CachedBackend<B> {
             init_called = true;
             Ok(())
         })
-        .map(Self::new)?;
+        .map(|backend| Self::new_with_len_known(backend, size))?;
 
         if init_called {
             init(&mut backend)?;
@@ -147,7 +164,7 @@ impl<B: Backend> Backend for CachedBackend<B> {
             init_called = true;
             Ok(())
         })
-        .map(Self::new)?;
+        .map(|backend| Self::new_with_len_known(backend, size))?;
 
         if init_called {
             init(&mut backend)?;
@@ -177,7 +194,7 @@ impl<B: Backend> Backend for CachedBackend<B> {
 
 impl<B: Backend> io::Read for CachedBackend<B> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let start = self.backend.stream_position()?;
+        let start = self.my_pos;
         let mut read = 0;
 
         for page in PageRange::new(start, start + buf.len() as u64) {
@@ -187,7 +204,8 @@ impl<B: Backend> io::Read for CachedBackend<B> {
                         buf[read..read + PAGE_SIZE].copy_from_slice(cache.as_ref());
                     } else {
                         let mut cache = CachePage::new();
-                        self.backend.seek(SeekFrom::Start(number * PAGE_SIZE as u64))?;
+                        self.backend
+                            .seek(SeekFrom::Start(number * PAGE_SIZE as u64))?;
                         self.backend.read_exact(cache.as_mut())?;
                         buf[read..read + PAGE_SIZE].copy_from_slice(cache.as_ref());
                         self.cache.insert(number, cache);
@@ -195,14 +213,21 @@ impl<B: Backend> io::Read for CachedBackend<B> {
                     }
                     read += PAGE_SIZE;
                 }
-                PageType::PartialPage { number, offset, size } => {
+                PageType::PartialPage {
+                    number,
+                    offset,
+                    size,
+                } => {
                     if let Some(cache) = self.cache.get(&number) {
-                        buf[read..read + size].copy_from_slice(&cache.data[offset..offset + size]);
+                        buf[read..read + size]
+                            .copy_from_slice(&cache.data[offset..offset + size]);
                     } else {
                         let mut cache = CachePage::new();
-                        self.backend.seek(SeekFrom::Start(number * PAGE_SIZE as u64))?;
+                        self.backend
+                            .seek(SeekFrom::Start(number * PAGE_SIZE as u64))?;
                         self.backend.read_exact(cache.as_mut())?;
-                        buf[read..read + size].copy_from_slice(&cache.data[offset..offset + size]);
+                        buf[read..read + size]
+                            .copy_from_slice(&cache.data[offset..offset + size]);
                         self.cache.insert(number, cache);
                         self.dirty.insert(number, false);
                     }
@@ -211,22 +236,22 @@ impl<B: Backend> io::Read for CachedBackend<B> {
             }
         }
 
-        self.backend.seek(SeekFrom::Start(start + read as u64))?;
-
+        self.my_pos += read as u64;
         Ok(read)
     }
 }
 
 impl<B: Backend> io::Write for CachedBackend<B> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let start = self.backend.stream_position()?;
+        let start = self.my_pos;
         let mut written = 0;
 
         for page in PageRange::new(start, start + buf.len() as u64) {
             match page {
                 PageType::FullPage { number } => {
                     if let Some(page) = self.cache.get_mut(&number) {
-                        page.data.copy_from_slice(&buf[written..written + PAGE_SIZE]);
+                        page.data
+                            .copy_from_slice(&buf[written..written + PAGE_SIZE]);
                     } else {
                         let mut cache = CachePage::new();
                         cache.data[..].copy_from_slice(&buf[written..]);
@@ -235,18 +260,25 @@ impl<B: Backend> io::Write for CachedBackend<B> {
                     self.dirty.insert(number, true);
                     written += PAGE_SIZE;
                 }
-                PageType::PartialPage { number, offset, size } => {
+                PageType::PartialPage {
+                    number,
+                    offset,
+                    size,
+                } => {
                     if let Some(page) = self.cache.get_mut(&number) {
-                        page.data[offset..offset + size].copy_from_slice(&buf[written..written + size]);
+                        page.data[offset..offset + size]
+                            .copy_from_slice(&buf[written..written + size]);
                     } else {
                         let mut cache = CachePage::new();
                         {
                             let origin_pos = self.backend.stream_position()?;
-                            self.backend.seek(SeekFrom::Start(number * PAGE_SIZE as u64))?;
+                            self.backend
+                                .seek(SeekFrom::Start(number * PAGE_SIZE as u64))?;
                             self.backend.read_exact(cache.data.as_mut())?;
                             self.backend.seek(SeekFrom::Start(origin_pos))?;
                         }
-                        cache.data[offset..offset + size].copy_from_slice(&buf[written..written + size]);
+                        cache.data[offset..offset + size]
+                            .copy_from_slice(&buf[written..written + size]);
                         self.cache.insert(number, cache);
                     }
                     self.dirty.insert(number, true);
@@ -255,8 +287,7 @@ impl<B: Backend> io::Write for CachedBackend<B> {
             }
         }
 
-        self.backend.seek(SeekFrom::Start(start + written as u64))?;
-
+        self.my_pos += written as u64;
         Ok(written)
     }
 
@@ -268,11 +299,16 @@ impl<B: Backend> io::Write for CachedBackend<B> {
 
 impl<B: Backend> io::Seek for CachedBackend<B> {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        self.backend.seek(pos)
+        self.my_pos = match pos {
+            SeekFrom::Start(pos) => pos,
+            SeekFrom::End(pos) => self.my_len.wrapping_add_signed(pos),
+            SeekFrom::Current(pos) => self.my_pos.wrapping_add_signed(pos),
+        };
+        Ok(self.my_pos)
     }
 
     fn stream_position(&mut self) -> io::Result<u64> {
-        self.backend.stream_position()
+        Ok(self.my_pos)
     }
 }
 
