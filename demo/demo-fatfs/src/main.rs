@@ -102,36 +102,38 @@ fn do_job<B: Backend>(
     println!("#{}: zero.bin written", seed);
 
     // 5. Read the file 'random.bin' and check if the data is correct.
-    let mut checksum = sha2::Sha224::new();
-    let mut random_file = root_dir.open_file("random.bin").unwrap();
-    for _ in 0..file_size / BLOCK_SIZE {
-        random_file.read_exact(&mut buf)?;
-        checksum.update(&buf);
+    for _ in 0..256 {
+        let mut checksum = sha2::Sha224::new();
+        let mut random_file = root_dir.open_file("random.bin").unwrap();
+        for _ in 0..file_size / BLOCK_SIZE {
+            random_file.read_exact(&mut buf)?;
+            checksum.update(&buf);
+        }
+        let actual_checksum = checksum.finalize();
+        assert_eq!(expected_checksum, actual_checksum);
+        drop(random_file);
     }
-    let actual_checksum = checksum.finalize();
-    assert_eq!(expected_checksum, actual_checksum);
-    drop(random_file);
 
     println!("#{}: random.bin read", seed);
 
     Ok(())
 }
 
-const JOBS: usize = 16;
+const JOBS: usize = 24;
 const FS_SIZE: u64 = 100 * 1024 * 1024;
 const FILE_SIZE: u64 = 90 * 1024 * 1024;
 
-const fn fs_size(id: usize) -> u64 {
-    ((50 + id * 5) * 1024 * 1024) as u64
+const fn fs_size(id: usize, total: usize) -> u64 {
+    ((60 + (total - id) * 3) * 1024 * 1024) as u64
 }
 
-const fn file_size(id: usize) -> u64 {
-    ((40 + id * 5) * 1024 * 1024) as u64
+const fn file_size(id: usize, total: usize) -> u64 {
+    ((55 + (total - id) * 3) * 1024 * 1024) as u64
 }
 
 fn sync_main<B: Backend>() {
     for i in 0..JOBS {
-        do_job::<B>(format!("{}.img", i), fs_size(i), file_size(i), i as u64).unwrap();
+        do_job::<B>(format!("{}.img", i), fs_size(i, JOBS), file_size(i, JOBS), i as u64).unwrap();
     }
 }
 
@@ -148,8 +150,8 @@ fn async_main<B: Backend>() {
                     sync(|| {
                         do_job::<B>(
                             format!("{}.img", i),
-                            fs_size(i),
-                            file_size(i),
+                            fs_size(i, JOBS),
+                            file_size(i, JOBS),
                             i as u64,
                         )
                         .unwrap()
